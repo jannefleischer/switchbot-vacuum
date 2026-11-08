@@ -31,7 +31,9 @@ SwitchBot does not provide a public API for their robot vacuums. The official Sw
 - **Base station controls** — start/stop mop drying, trigger dust collection and mop wash
 - **Base station tracking** — dedicated mop drying and mop washing binary sensors, plus a status sensor that distinguishes drying, washing, dust collection and water refilling
 - **Map image** — the robot's own rendered map as an `image` entity, works with the stock picture card or `xiaomi-vacuum-map-card`
-- **Automatic room discovery** — room names are downloaded from the vacuum's S3 map data every 24 hours
+- **Cleaning history** (S10 family) — when each room was last vacuumed and mopped, kept across restarts
+- **Automatic room discovery** — room names are read from the vacuum's map data when it changes, and at least daily
+- **Low cloud load** — history and map are only fetched when something changed; see [Cloud requests](#cloud-requests)
 - **Multi-device support** — if your account has multiple SwitchBot vacuums, the config flow lets you pick which one to add
 - **Force refresh service** — manually re-download room data and device status on demand
 
@@ -41,7 +43,7 @@ SwitchBot does not provide a public API for their robot vacuums. The official Sw
 
 1. Open HACS in Home Assistant
 2. Click the three dots menu → **Custom repositories**
-3. Add `https://github.com/jaco/switchbot-vacuum` with category **Integration**
+3. Add `https://github.com/jannefleischer/switchbot-vacuum` with category **Integration**
 4. Search for "SwitchBot Vacuum" and install
 5. Restart Home Assistant
 
@@ -73,7 +75,7 @@ The main entity (`vacuum.switchbot_vacuum`) provides:
 | Feature | Description |
 |---------|-------------|
 | **State** | idle, cleaning, docked, paused, returning |
-| **Battery** | Current battery percentage |
+| **Battery** | Current battery percentage, as the `battery_level` attribute where Home Assistant still shows it. Current cores no longer have the vacuum battery feature. |
 | **Fan speed** | Quiet, Standard, Strong, Max (lowercase names still accepted) |
 | **Start** | Start full cleaning |
 | **Stop / Pause** | Stop or pause current cleaning |
@@ -90,8 +92,8 @@ The vacuum entity exposes additional attributes you can use in automations and t
 | `water_level` | `1` | Current water output level (1–3) |
 | `clean_type` | `sweep_mop` | Current mode: `sweep`, `mop`, `sweep_mop`, or `first_sweep_then_mop` |
 | `times` | `1` | Number of cleaning passes |
-| `last_clean_area` | `45` | Area cleaned in last session (m²) |
-| `last_clean_time` | `30` | Duration of last session (minutes) |
+| `last_clean_area` | `45` | Area of the current or most recent run (m², live progress) |
+| `last_clean_time` | `30` | Cleaning time of the current or most recent run (minutes, live progress) |
 | `rooms` | `{"ROOM_013": "Kitchen", ...}` | All known rooms with IDs and names |
 
 **Reading attributes in templates:**
@@ -273,6 +275,30 @@ data:
 The clean uses the vacuum's current clean mode — the `clean_type`, `water_level` and
 `passes` dropdowns plus the fan speed on the vacuum entity. Use
 `switchbot_vacuum.clean_rooms` instead when you want to override those per call.
+
+### Cleaning history (S10 family only)
+
+The integration reads the task records the SwitchBot app shows and keeps them in Home
+Assistant's storage, so they survive restarts and remain available after the cloud drops
+them (up to 500 runs).
+
+| Entity | Type | Description |
+|--------|------|-------------|
+| `sensor.*_letzte_reinigung` | Timestamp | End of the last run that really cleaned |
+| `sensor.*_<room>_gesaugt` | Timestamp | When this room was last vacuumed |
+| `sensor.*_<room>_gewischt` | Timestamp | When this room was last mopped |
+
+The last-clean sensor exposes `start`, `rooms`, `room_ids`, `vacuumed`, `mopped`,
+`clean_minutes`, `area`, `action`, `result` and `source` as attributes.
+
+How runs are counted:
+
+- Runs with less than one minute of cleaning time are ignored.
+- A run stopped early still counts, for all rooms it was started with.
+- `sweep` counts as vacuumed, `mop` as mopped, `sweep_mop` and `first_sweep_then_mop` as both.
+  This reflects the mode the run was started with.
+- A zone from `clean_areas` counts for the room containing its centre, once the map is loaded.
+- `clean_all` counts for every known room.
 
 ### Map (S10 family only)
 
@@ -464,11 +490,25 @@ Until someone intercepts a valid signed request (e.g. via SSL proxy on a rooted 
 
 The `switchbot_vacuum.clean_rooms` service will **not appear** for K10+ devices. Full-house cleaning (`vacuum.start`) works normally.
 
+## Cloud requests
+
+The task record list cannot be queried incrementally, so the integration avoids requests
+instead of asking for less data:
+
+| Request | When |
+|---------|------|
+| Status | Every 30 s while the robot is active, every 5 min while it sits in the station |
+| Task records | When a task starts or ends, a few follow-ups within 10 min, otherwise every 6 h |
+| Map | When its metadata changes (at most every 10 min), otherwise daily; hourly retry if unavailable |
+
+A cleaning run that starts while the robot is idle can therefore show up here up to 5
+minutes late. The Bluetooth `switchbot` integration can run alongside for live status.
+
 ## Technical notes
 
 - The integration polls the device every 30 seconds
 - Auth tokens are refreshed automatically every 1.5 hours
-- Room names are refreshed from S3 map data every 24 hours (or on demand via `force_refresh`); room refresh runs as a background task so it never blocks setup
+- Room names are refreshed from S3 map data when the map changes and at least every 24 hours (or on demand via `force_refresh`); room refresh runs as a background task so it never blocks setup
 - Error codes are read from device property 1019 and mapped to descriptive strings; unknown codes are logged as warnings so they can be reported and added
 - Error code mappings were reverse-engineered from the SwitchBot APK's Flutter module (`feature_sweeper`, Qihoo 360 SDK)
 
