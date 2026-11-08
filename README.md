@@ -285,8 +285,10 @@ them (up to 500 runs).
 | Entity | Type | Description |
 |--------|------|-------------|
 | `sensor.*_last_clean` | Timestamp | End of the last run that really cleaned |
-| `sensor.*_<room>_vacuumed` | Timestamp | When this room was last vacuumed |
-| `sensor.*_<room>_mopped` | Timestamp | When this room was last mopped |
+| `sensor.switchbot_vacuum_room_00x_vacuumed` | Timestamp | When this room was last vacuumed |
+| `sensor.switchbot_vacuum_room_00x_mopped` | Timestamp | When this room was last mopped |
+
+Room entity IDs are built from the room ID, so they stay the same when a room is renamed in the app.
 
 The last-clean sensor exposes `start`, `rooms`, `room_ids`, `vacuumed`, `mopped`,
 `clean_minutes`, `area`, `action`, `result` and `source` as attributes.

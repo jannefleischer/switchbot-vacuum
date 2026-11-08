@@ -127,6 +127,11 @@ async def async_setup_entry(
 ROOM_ACTIVITY_KINDS: dict[str, str] = {"vacuumed": "Vacuumed", "mopped": "Mopped"}
 
 
+def _room_object_id(room_id: str) -> str:
+    """Build an entity ID from the room ID, which stays stable when a room is renamed."""
+    return f"switchbot_vacuum_{room_id.lower()}"
+
+
 def _from_ms(value: int | None) -> datetime | None:
     """Convert a cloud timestamp in milliseconds to a datetime."""
     return datetime.fromtimestamp(value / 1000, tz=UTC) if value else None
@@ -191,6 +196,7 @@ class SwitchBotRoomActivitySensor(CoordinatorEntity[SwitchBotS10Coordinator], Se
         self._room_id = room_id
         self._kind = kind
         self._attr_unique_id = f"{coordinator.device_mac}_room_{room_id}_{kind}"
+        self.entity_id = f"sensor.{_room_object_id(room_id)}_{kind}"
         self._attr_name = f"{room_name} {ROOM_ACTIVITY_KINDS[kind]}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.device_mac)},
@@ -221,6 +227,7 @@ class SwitchBotRoomSensor(CoordinatorEntity[SwitchBotS10Coordinator], SensorEnti
         super().__init__(coordinator)
         self._room_id = room_id
         self._attr_unique_id = f"{coordinator.device_mac}_room_{room_id}"
+        self.entity_id = f"sensor.{_room_object_id(room_id)}"
         self._attr_name = room_name
         self._attr_icon = "mdi:floor-plan"
         self._attr_device_info = DeviceInfo(
