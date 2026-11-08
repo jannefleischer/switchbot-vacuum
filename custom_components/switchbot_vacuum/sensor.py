@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -89,6 +91,7 @@ async def async_setup_entry(
 
     if device_type not in K10_FAMILY_DEVICE_TYPES:
         entities.append(SwitchBotVacuumStatus(coordinator))
+        entities.append(SwitchBotLastCleanSensor(coordinator))
         entities.extend(
             SwitchBotCleanSummarySensor(coordinator, desc)
             for desc in CLEAN_SUMMARY_SENSORS
@@ -109,11 +112,100 @@ async def async_setup_entry(
                 new_entities.append(
                     SwitchBotRoomSensor(coordinator, room_id, room_name)
                 )
+                if device_type not in K10_FAMILY_DEVICE_TYPES:
+                    new_entities.extend(
+                        SwitchBotRoomActivitySensor(coordinator, room_id, room_name, kind)
+                        for kind in ROOM_ACTIVITY_KINDS
+                    )
         if new_entities:
             async_add_entities(new_entities)
 
     _async_add_new_rooms()
     coordinator.async_add_listener(_async_add_new_rooms)
+
+
+ROOM_ACTIVITY_KINDS: dict[str, str] = {"vacuumed": "gesaugt", "mopped": "gewischt"}
+
+
+def _from_ms(value: int | None) -> datetime | None:
+    """Convert a cloud timestamp in milliseconds to a datetime."""
+    return datetime.fromtimestamp(value / 1000, tz=UTC) if value else None
+
+
+class SwitchBotLastCleanSensor(CoordinatorEntity[SwitchBotS10Coordinator], SensorEntity):
+    """When the last real cleaning run ended, with its rooms and mode as attributes."""
+
+    _attr_name = "Letzte Reinigung"
+    _attr_icon = "mdi:broom"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator: SwitchBotS10Coordinator) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_mac}_last_clean"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_mac)},
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the end of the last run."""
+        last = self.coordinator.data.get("last_task")
+        return _from_ms(last["end_ms"]) if last else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return what the last run did."""
+        last = self.coordinator.data.get("last_task")
+        if not last:
+            return {}
+        return {
+            "start": _from_ms(last["start_ms"]).isoformat(),
+            "rooms": last["rooms"],
+            "room_ids": last["room_ids"],
+            "vacuumed": last["vacuumed"],
+            "mopped": last["mopped"],
+            "clean_minutes": last["clean_minutes"],
+            "area": last["area"],
+            "action": last["action"],
+            "result": last["result"],
+            "source": last["source"],
+        }
+
+
+class SwitchBotRoomActivitySensor(CoordinatorEntity[SwitchBotS10Coordinator], SensorEntity):
+    """When a room was last vacuumed or mopped."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:calendar-check"
+
+    def __init__(
+        self,
+        coordinator: SwitchBotS10Coordinator,
+        room_id: str,
+        room_name: str,
+        kind: str,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._room_id = room_id
+        self._kind = kind
+        self._attr_unique_id = f"{coordinator.device_mac}_room_{room_id}_{kind}"
+        self._attr_name = f"{room_name} {ROOM_ACTIVITY_KINDS[kind]}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_mac)},
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return when the room was last cleaned this way."""
+        activity = self.coordinator.data.get("room_activity", {})
+        return _from_ms(activity.get(self._room_id, {}).get(self._kind))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Return the room ID."""
+        return {"room_id": self._room_id}
 
 
 class SwitchBotRoomSensor(CoordinatorEntity[SwitchBotS10Coordinator], SensorEntity):

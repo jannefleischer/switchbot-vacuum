@@ -14,8 +14,10 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .clean_history import last_task_summary, merge_records, room_activity
 from .const import (
     API_AUTH_HOST,
     API_TIMEOUT,
@@ -56,6 +58,8 @@ from .const import (
     PROP_WORK_STATUS,
     S3_REGION,
     SUPPORTED_DEVICE_TYPES,
+    HISTORY_MIN_REFRESH_SECONDS,
+    HISTORY_REFRESH_SECONDS,
     TOKEN_REFRESH_SECONDS,
     UPDATE_INTERVAL_SECONDS,
 )
@@ -107,6 +111,12 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
         self._last_room_refresh: float = 0
         self._map: SwitchBotMap | None = None
         self._last_map_refresh: float = 0
+        self._tasks: dict[str, dict[str, Any]] = {}
+        self._history_loaded: bool = False
+        self._last_history_refresh: float = 0
+        self._history_store: Store | None = (
+            Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.task_history") if entry else None
+        )
 
         super().__init__(
             hass,
@@ -434,6 +444,48 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
 
         return parse_map(files)
 
+    async def async_get_task_records(self) -> list[dict[str, Any]]:
+        """Fetch the cleaning task records the app shows (S10 family only)."""
+        async with aiohttp.ClientSession() as session, session.post(
+            f"{self.wonderlab_endpoint}/sweeper/v1/taskRecord/list",
+            headers=self._headers(),
+            json={"deviceID": self.device_mac, "pageNum": 1, "pageSize": 20},
+            timeout=aiohttp.ClientTimeout(total=API_TIMEOUT),
+        ) as resp:
+            data = await resp.json()
+        if data.get("resultCode") != 200:
+            raise ValueError(f"task records failed (resultCode {data.get('resultCode')})")
+        return (data.get("data") or {}).get("recordList") or []
+
+    async def _async_refresh_history(self, work_status: Any) -> None:
+        """Merge new task records into the persistent store.
+
+        A failure must never break status updates, so it only keeps the stored data.
+        """
+        if self._history_store is None:
+            return
+        if not self._history_loaded:
+            stored = await self._history_store.async_load()
+            self._tasks = stored if isinstance(stored, dict) else {}
+            self._history_loaded = True
+
+        age = time.time() - self._last_history_refresh
+        status_changed = bool(self.data) and self.data.get("work_status") != work_status
+        if age < HISTORY_MIN_REFRESH_SECONDS or (
+            age < HISTORY_REFRESH_SECONDS and not status_changed
+        ):
+            return
+
+        self._last_history_refresh = time.time()
+        try:
+            records = await self.async_get_task_records()
+        except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+            _LOGGER.debug("Task record refresh failed (%s)", type(exc).__name__)
+            return
+        self._tasks, changed = merge_records(self._tasks, records)
+        if changed:
+            await self._history_store.async_save(self._tasks)
+
     async def _background_map_refresh(self) -> None:
         """Refresh the map in the background so it doesn't block coordinator updates."""
         self._last_map_refresh = time.time()
@@ -611,13 +663,20 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
         if time.time() - self._last_map_refresh > MAP_REFRESH_SECONDS:
             self.hass.async_create_task(self._background_map_refresh())
 
+        work_status = props.get(PROP_WORK_STATUS, 1)
+        await self._async_refresh_history(work_status)
+        shapes = self._map.room_shapes if self._map else []
+        tasks = list(self._tasks.values())
+
         return {
             "online": props.get(PROP_ONLINE, False),
             "battery": props.get(PROP_BATTERY, 0),
-            "work_status": props.get(PROP_WORK_STATUS, 1),
+            "work_status": work_status,
             "error_code": _first_error_code(props.get(PROP_ERROR_CODE, 0)),
             "clean_mode": props.get(PROP_CLEAN_MODE, {}),
             "clean_summary": props.get(PROP_CLEAN_SUMMARY, {}),
             "firmware": props.get(PROP_FIRMWARE, ""),
             "rooms": self._rooms,
+            "room_activity": room_activity(tasks, shapes, self._rooms),
+            "last_task": last_task_summary(tasks, shapes, self._rooms),
         }
