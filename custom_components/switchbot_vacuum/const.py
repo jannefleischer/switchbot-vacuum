@@ -146,6 +146,8 @@ PROP_ONLINE: Final = 66
 PROP_BATTERY: Final = 1004
 PROP_WORK_STATUS: Final = 1010
 PROP_ERROR_CODE: Final = 1011
+PROP_TASK_TYPE: Final = 1013
+PROP_LAST_TASK_ID: Final = 1015
 PROP_MAP_ID: Final = 1023
 PROP_S3_BUCKET: Final = 1028
 PROP_S3_OBJECT: Final = 1029
@@ -343,8 +345,16 @@ DEFAULT_S3_BUCKET: Final = "prod-eu-sweeper-origin"
 
 # Timings
 UPDATE_INTERVAL_SECONDS: Final = 30
-HISTORY_REFRESH_SECONDS: Final = 300
-HISTORY_MIN_REFRESH_SECONDS: Final = 30
+# Polling is relaxed while the robot only sits in its station.
+UPDATE_INTERVAL_IDLE_SECONDS: Final = 300
+IDLE_WORK_STATUSES: Final = frozenset({1, 2, 3, 16, 17, 18, 19, 20, 21, 27, 29, 30, 36})
+# Task records are fetched when a task starts or ends, plus a rare safety refresh.
+HISTORY_FOLLOWUP_SECONDS: Final = 120
+HISTORY_FOLLOWUP_WINDOW_SECONDS: Final = 600
+HISTORY_SAFETY_REFRESH_SECONDS: Final = 21600
 TOKEN_REFRESH_SECONDS: Final = 5400  # 1.5 hours
 ROOM_REFRESH_SECONDS: Final = 86400  # 24 hours
-MAP_REFRESH_SECONDS: Final = 3600
+# The map is downloaded when its metadata changes, plus a daily safety refresh.
+MAP_MIN_REFRESH_SECONDS: Final = 600
+MAP_RETRY_SECONDS: Final = 3600
+MAP_SAFETY_REFRESH_SECONDS: Final = 86400

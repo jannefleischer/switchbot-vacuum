@@ -42,7 +42,13 @@ from .const import (
     K10PRO_PROP_ONLINE,
     K10PRO_PROP_SUCTION_POW_LEVEL,
     K10PRO_PROP_WORK_STATUS,
-    MAP_REFRESH_SECONDS,
+    IDLE_WORK_STATUSES,
+    MAP_MIN_REFRESH_SECONDS,
+    MAP_RETRY_SECONDS,
+    MAP_SAFETY_REFRESH_SECONDS,
+    PROP_LAST_TASK_ID,
+    PROP_TASK_TYPE,
+    UPDATE_INTERVAL_IDLE_SECONDS,
     PROP_AWS_CREDS,
     PROP_BATTERY,
     PROP_CLEAN_MODE,
@@ -58,8 +64,9 @@ from .const import (
     PROP_WORK_STATUS,
     S3_REGION,
     SUPPORTED_DEVICE_TYPES,
-    HISTORY_MIN_REFRESH_SECONDS,
-    HISTORY_REFRESH_SECONDS,
+    HISTORY_FOLLOWUP_SECONDS,
+    HISTORY_FOLLOWUP_WINDOW_SECONDS,
+    HISTORY_SAFETY_REFRESH_SECONDS,
     TOKEN_REFRESH_SECONDS,
     UPDATE_INTERVAL_SECONDS,
 )
@@ -68,7 +75,8 @@ from .map import MAP_FILES, SwitchBotMap, parse_map
 _LOGGER = logging.getLogger(__name__)
 
 STATUS_PROPS = [PROP_ONLINE, PROP_BATTERY, PROP_WORK_STATUS, PROP_ERROR_CODE,
-                PROP_CLEAN_MODE, PROP_CLEAN_SUMMARY, PROP_FIRMWARE]
+                PROP_CLEAN_MODE, PROP_CLEAN_SUMMARY, PROP_FIRMWARE,
+                PROP_TASK_TYPE, PROP_LAST_TASK_ID, PROP_MAP_INFO]
 K10PRO_STATUS_PROPS = [
     K10PRO_PROP_ONLINE,
     K10PRO_PROP_BATTERY,
@@ -114,6 +122,9 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
         self._tasks: dict[str, dict[str, Any]] = {}
         self._history_loaded: bool = False
         self._last_history_refresh: float = 0
+        self._history_key: tuple[Any, Any] | None = None
+        self._history_followup_until: float = 0
+        self._map_fingerprint: str | None = None
         self._history_store: Store | None = (
             Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.task_history") if entry else None
         )
@@ -457,7 +468,23 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
             raise ValueError(f"task records failed (resultCode {data.get('resultCode')})")
         return (data.get("data") or {}).get("recordList") or []
 
-    async def _async_refresh_history(self, work_status: Any) -> None:
+    def _history_refresh_due(self, key: tuple[Any, Any], now: float) -> bool:
+        """Decide whether the task records are worth fetching.
+
+        The record list cannot be queried incrementally, so calls are avoided instead:
+        fetch when a task starts or ends, follow up briefly in case its record appears
+        late, and otherwise only do a rare safety refresh.
+        """
+        if key != self._history_key:
+            self._history_key = key
+            self._history_followup_until = now + HISTORY_FOLLOWUP_WINDOW_SECONDS
+            return True
+        age = now - self._last_history_refresh
+        if now < self._history_followup_until:
+            return age >= HISTORY_FOLLOWUP_SECONDS
+        return age >= HISTORY_SAFETY_REFRESH_SECONDS
+
+    async def _async_refresh_history(self, props: dict[int, Any]) -> None:
         """Merge new task records into the persistent store.
 
         A failure must never break status updates, so it only keeps the stored data.
@@ -469,14 +496,12 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
             self._tasks = stored if isinstance(stored, dict) else {}
             self._history_loaded = True
 
-        age = time.time() - self._last_history_refresh
-        status_changed = bool(self.data) and self.data.get("work_status") != work_status
-        if age < HISTORY_MIN_REFRESH_SECONDS or (
-            age < HISTORY_REFRESH_SECONDS and not status_changed
-        ):
+        now = time.time()
+        key = (props.get(PROP_LAST_TASK_ID), props.get(PROP_TASK_TYPE))
+        if not self._history_refresh_due(key, now):
             return
 
-        self._last_history_refresh = time.time()
+        self._last_history_refresh = now
         try:
             records = await self.async_get_task_records()
         except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError) as exc:
@@ -485,6 +510,20 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
         self._tasks, changed = merge_records(self._tasks, records)
         if changed:
             await self._history_store.async_save(self._tasks)
+
+    def _map_refresh_due(self, map_info: Any, now: float) -> bool:
+        """Download the map only when its metadata changed, or as a rare retry."""
+        fingerprint = json.dumps(map_info, sort_keys=True, default=str)
+        age = now - self._last_map_refresh
+        if fingerprint != self._map_fingerprint:
+            if age < MAP_MIN_REFRESH_SECONDS:
+                return False
+            self._map_fingerprint = fingerprint
+            self._last_room_refresh = 0
+            return True
+        if self._map is None:
+            return age >= MAP_RETRY_SECONDS
+        return age >= MAP_SAFETY_REFRESH_SECONDS
 
     async def _background_map_refresh(self) -> None:
         """Refresh the map in the background so it doesn't block coordinator updates."""
@@ -660,11 +699,18 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
         if time.time() - self._last_room_refresh > 86400:
             self.hass.async_create_task(self._background_room_refresh())
 
-        if time.time() - self._last_map_refresh > MAP_REFRESH_SECONDS:
+        if self._map_refresh_due(props.get(PROP_MAP_INFO), time.time()):
             self.hass.async_create_task(self._background_map_refresh())
 
         work_status = props.get(PROP_WORK_STATUS, 1)
-        await self._async_refresh_history(work_status)
+        await self._async_refresh_history(props)
+        self.update_interval = timedelta(
+            seconds=(
+                UPDATE_INTERVAL_IDLE_SECONDS
+                if work_status in IDLE_WORK_STATUSES
+                else UPDATE_INTERVAL_SECONDS
+            )
+        )
         shapes = self._map.room_shapes if self._map else []
         tasks = list(self._tasks.values())
 
