@@ -97,7 +97,7 @@ for item in items:
     log("device", item.get("device_detail", {}).get("device_type"), "|", item.get("device_name"))
 vac = next((i for i in items if i.get("device_detail", {}).get("device_type") in S20_TYPES), None)
 if vac is None:
-    log("KEIN S20 gefunden (W1106000/W1107000)")
+    log("no S20 found (W1106000/W1107000)")
     sys.exit(2)
 mac = vac["device_mac"]
 log("S20 Typ", vac["device_detail"]["device_type"], "product_key", vac.get("product_key"))
@@ -111,14 +111,14 @@ for page in range(1, 11):
     status, data = post(host + PATH, {"deviceID": mac, "pageNum": page, "pageSize": 20})
     body = data.get("data") or {}
     batch = body.get("recordList") or []
-    log("seite", page, "http", status, "code", data.get("resultCode"), "n", len(batch),
+    log("page", page, "http", status, "code", data.get("resultCode"), "n", len(batch),
         "currentPage", body.get("currentPage"), "finalPage", body.get("finalPage"))
     if not batch:
         break
     new = [r for r in batch if r["taskID"] not in {x["taskID"] for x in records}]
     records.extend(new)
     if not new:
-        log("seite wiederholt sich, Ende")
+        log("page repeats, stopping")
         break
     time.sleep(0.5)
 

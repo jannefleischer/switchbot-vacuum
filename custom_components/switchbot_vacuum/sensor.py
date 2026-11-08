@@ -124,7 +124,7 @@ async def async_setup_entry(
     coordinator.async_add_listener(_async_add_new_rooms)
 
 
-ROOM_ACTIVITY_KINDS: dict[str, str] = {"vacuumed": "gesaugt", "mopped": "gewischt"}
+ROOM_ACTIVITY_KINDS: dict[str, str] = {"vacuumed": "Vacuumed", "mopped": "Mopped"}
 
 
 def _from_ms(value: int | None) -> datetime | None:
@@ -135,7 +135,7 @@ def _from_ms(value: int | None) -> datetime | None:
 class SwitchBotLastCleanSensor(CoordinatorEntity[SwitchBotS10Coordinator], SensorEntity):
     """When the last real cleaning run ended, with its rooms and mode as attributes."""
 
-    _attr_name = "Letzte Reinigung"
+    _attr_name = "Last Clean"
     _attr_icon = "mdi:broom"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 

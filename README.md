@@ -284,9 +284,9 @@ them (up to 500 runs).
 
 | Entity | Type | Description |
 |--------|------|-------------|
-| `sensor.*_letzte_reinigung` | Timestamp | End of the last run that really cleaned |
-| `sensor.*_<room>_gesaugt` | Timestamp | When this room was last vacuumed |
-| `sensor.*_<room>_gewischt` | Timestamp | When this room was last mopped |
+| `sensor.*_last_clean` | Timestamp | End of the last run that really cleaned |
+| `sensor.*_<room>_vacuumed` | Timestamp | When this room was last vacuumed |
+| `sensor.*_<room>_mopped` | Timestamp | When this room was last mopped |
 
 The last-clean sensor exposes `start`, `rooms`, `room_ids`, `vacuumed`, `mopped`,
 `clean_minutes`, `area`, `action`, `result` and `source` as attributes.
