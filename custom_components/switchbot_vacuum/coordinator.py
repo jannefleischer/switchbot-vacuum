@@ -1,6 +1,7 @@
 """Data update coordinator for SwitchBot Vacuum."""
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -425,6 +426,25 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
             aws_session_token=creds["sessionToken"],
         )
 
+    def _download_s3_objects(
+        self, creds: dict[str, Any], bucket: str, keys: list[str]
+    ) -> dict[str, bytes]:
+        """Download objects on a worker thread, as botocore does blocking file I/O."""
+
+        async def _download() -> dict[str, bytes]:
+            objects: dict[str, bytes] = {}
+            async with self._s3_client(creds) as s3:
+                for key in keys:
+                    try:
+                        resp = await s3.get_object(Bucket=bucket, Key=key)
+                    except s3.exceptions.ClientError:
+                        _LOGGER.debug("S3 object not present: %s", key)
+                        continue
+                    objects[key] = await resp["Body"].read()
+            return objects
+
+        return asyncio.run(_download())
+
     async def async_fetch_map(self) -> SwitchBotMap | None:
         """Download and decode the current map package from S3 (S10 family only)."""
         props = await self.async_get_properties(
@@ -443,15 +463,11 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
             _LOGGER.debug("AWS credentials expired, skipping map download")
             return None
 
-        files: dict[str, bytes] = {}
-        async with self._s3_client(creds) as s3:
-            for name in MAP_FILES:
-                try:
-                    resp = await s3.get_object(Bucket=bucket, Key=f"{prefix}/{map_id}/{name}")
-                except s3.exceptions.ClientError:
-                    _LOGGER.debug("Map file %s not present for map %s", name, map_id)
-                    continue
-                files[name] = await resp["Body"].read()
+        keys = {name: f"{prefix}/{map_id}/{name}" for name in MAP_FILES}
+        objects = await self.hass.async_add_executor_job(
+            self._download_s3_objects, creds, bucket, list(keys.values())
+        )
+        files = {name: objects[key] for name, key in keys.items() if key in objects}
 
         return parse_map(files)
 
@@ -584,9 +600,10 @@ class SwitchBotS10Coordinator(DataUpdateCoordinator):
             return
 
         try:
-            async with self._s3_client(creds) as s3:
-                resp = await s3.get_object(Bucket=bucket, Key=resource)
-                zip_bytes = await resp["Body"].read()
+            objects = await self.hass.async_add_executor_job(
+                self._download_s3_objects, creds, bucket, [resource]
+            )
+            zip_bytes = objects[resource]
         except Exception as exc:
             _LOGGER.warning("Failed to download map from S3: %s", exc)
             return
